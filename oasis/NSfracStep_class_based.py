@@ -22,12 +22,11 @@ import oasis.solvers.NSfracStep.IPCS_ABCN as solver
 commandline_kwargs = parse_command_line()
 default_problem = "Cylinder"
 problemname = commandline_kwargs.get("problem", default_problem)
-# Import the problem module
 print("Importing problem module " + problemname)
 # TODO: import the right ProblemDomain based on problemname:
-# solver =  NSfracStep.get_domain(problemname)
+# ProblemDomain =  NSfracStep.get_domain(problemname)
 
-commandline_kwargs["dt"] = 0.001
+commandline_kwargs["dt"] = 0.01
 my_domain = ProblemDomain(case=2)
 my_domain.set_parameters_from_commandline(commandline_kwargs)
 my_domain.mesh_from_file(mesh_name="../mesh.xdmf", facet_name="../mf.xdmf")
@@ -49,7 +48,7 @@ solvername = my_domain.solver
 # solver =  NSfracStep.get_solver(solvername)
 
 cond = my_domain.krylov_solvers["monitor_convergence"]
-psi = my_domain.use_krylov_solvers and cond  # = print_solve_info
+print_info = my_domain.use_krylov_solvers and cond  # = print_solve_info
 
 tx = OasisTimer("Timestep timer")
 tx.start()
@@ -79,19 +78,19 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
-            # lesmodel.les_update(**NS_namespace)
-            # nnmodel.nn_update(**NS_namespace)
-            fit.assemble_first_inner_iter()
+            # lesmodel.les_update()
+            # nnmodel.nn_update()
+            fit.assemble()
             tvs.A = fit.A
         udiff[0] = 0.0
         for i, ui in enumerate(my_domain.u_components):
-            t1 = OasisTimer("Solving tentative velocity " + ui, psi)
+            t1 = OasisTimer("Solving tentative velocity " + ui, print_info)
             tvs.assemble(ui=ui)
             my_domain.velocity_tentative_hook(ui=ui)
             tvs.solve(ui=ui, udiff=udiff)
             t1.stop()
         t0.stop()
-        t2 = OasisTimer("Pressure solve", psi)
+        t2 = OasisTimer("Pressure solve", print_info)
         ps.assemble()
         my_domain.pressure_hook()
         ps.solve()
