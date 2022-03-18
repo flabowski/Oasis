@@ -9,7 +9,7 @@ from ufl import Coefficient
 
 
 # Create some dictionaries to hold work matrices
-class Mat_cache_dict(dict):
+class Mat_cache_dict(dict):  # deprecated
     """Items in dictionary are matrices stored for efficient reuse."""
 
     def __missing__(self, key):
@@ -44,7 +44,7 @@ class Solver_cache_dict(dict):
         return self[key]
 
 
-A_cache = Mat_cache_dict()
+A_cache = Mat_cache_dict()  # deprecated
 Solver_cache = Solver_cache_dict()
 
 
@@ -184,7 +184,9 @@ class GradFunction(OasisFunction):
             G = df.assemble(df.TrialFunction(DG) * self.test * df.dx())
             dg = df.Function(DG)
             dP = df.assemble(
-                df.TrialFunction(p_.function_space()).dx(i) * TestFunction(DG) * df.dx()
+                df.TrialFunction(p_.function_space()).dx(i)
+                * df.TestFunction(DG)
+                * df.dx()
             )
             self.WGM = compiled_gradient_module.compute_weighted_gradient_matrix(
                 G, dP, dg
@@ -197,7 +199,6 @@ class GradFunction(OasisFunction):
         Possible Coefficient u may replace p_ and makes it possible
         to use this Function to compute both grad(p) and grad(dp), i.e.,
         the gradient of pressure correction.
-
         """
         if isinstance(u, Coefficient):
             self.matvec[1] = u
@@ -220,6 +221,7 @@ class GradFunction(OasisFunction):
             self.vector().axpy(1.0, self.WGM * self.matvec[1].vector())
         else:
             OasisFunction.__call__(self, assemb_rhs=assemb_rhs)
+        return self.vector()
 
 
 class DivFunction(OasisFunction):

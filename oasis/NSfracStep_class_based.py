@@ -9,7 +9,7 @@ import dolfin as df
 import numpy as np
 from oasis.common import parse_command_line
 from oasis.problems import (
-    info_green,
+    # info_green,
     info_red,
     OasisTimer,
     initial_memory_use,
@@ -17,6 +17,13 @@ from oasis.problems import (
 )
 from oasis.problems.NSfracStep.Cylinder import Cylinder as ProblemDomain
 import oasis.solvers.NSfracStep.IPCS_ABCN as solver
+from low_rank_model_construction.basis_function_interpolation import (
+    RightSingularValueInterpolator,
+    ReducedOrderModel,
+)
+import matplotlib.pyplot as plt
+
+plt.close("all")
 
 # TODO: implement ScalarSolver
 commandline_kwargs = parse_command_line()
@@ -57,21 +64,50 @@ total_timer = OasisTimer("Start simulations", True)
 it0 = my_domain.iters_on_first_timestep
 max_iter = my_domain.max_iter
 
+use_ROM = True
+if use_ROM:
+    ###
+    dir_oasis = "/home/florianma@ad.ife.no/ad_disk/Florian/Repositoties/Oasis/"
+    dir_rom = dir_oasis + "results/20220317_181556/"
+
+    U = np.load(dir_rom + "ROM_U_p.npy")
+    S = np.load(dir_rom + "ROM_S_p.npy")
+    VT = np.load(dir_rom + "ROM_VT_p.npy")
+    X = np.load(dir_rom + "X_p.npy")
+    X_min = np.load(dir_rom + "ROM_X_min_p.npy")
+    X_range = np.load(dir_rom + "ROM_X_range_p.npy")
+    time = np.load(dir_rom + "time.npy")
+    nu = np.load(dir_rom + "nu.npy")
+    grid = (time,)
+    ROM = ReducedOrderModel(grid, U, S, VT, X_min, X_range)
+    ####
+
 fit = solver.FirstInner(my_domain)
 tvs = solver.TentativeVelocityStep(my_domain)
 ps = solver.PressureStep(my_domain)
-
 stop = False
 t = 0.0
 tstep = 0
 while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
+
+    if tstep == 10:
+        stop = True
     t += my_domain.dt
     tstep += 1
 
     inner_iter = 0
     udiff = np.array([1e8])  # Norm of velocity change over last inner iter
     num_iter = max(it0, max_iter) if tstep <= 10 else max_iter
-    my_domain.start_timestep_hook()  # FIXME: what do we need to pass here?
+
+    my_domain.start_timestep_hook()
+
+    tr0 = OasisTimer("ROM")
+    if use_ROM:
+        print(t, time[tstep - 1])
+        x, y = my_domain.Q.tabulate_dof_coordinates().T
+        p_approx, p_approx_n = ROM.predict([t])
+        # my_domain.q_["p"].vector().vec().array = p_approx.ravel()
+    tr0.stop()
 
     while udiff[0] > my_domain.max_error and inner_iter < num_iter:
         inner_iter += 1
@@ -95,9 +131,12 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
         my_domain.pressure_hook()
         ps.solve()
         t2.stop()
+        if tstep <= 2:
+            fig, ax = plt.subplots()
+            plt.plot(x, my_domain.dp_.vector(), "k.")
+            plt.show()
 
         my_domain.print_velocity_pressure_info(num_iter, inner_iter, udiff)
-
     # Update velocity
     t3 = OasisTimer("Velocity update")
     for i, ui in enumerate(my_domain.u_components):
@@ -112,7 +151,16 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
     #         pblm.scalar_hook()
     #         solver.scalar_solve()
     #         t1.stop()
-    my_domain.temporal_hook(t=t, tstep=tstep)
+    my_domain.temporal_hook(t=t, tstep=tstep, tvs=tvs)
+
+    p_exact = my_domain.q_["p"].vector().vec().array
+    if use_ROM and tstep <= 5:
+        fig, ax = plt.subplots()
+        plt.plot(x, p_approx, "r.")
+        plt.plot(x, p_exact, "g.")
+        plt.plot(x, X[:, tstep - 1], "b.")
+
+        plt.show()
 
     # TODO: Save solution if required and check for killoasis file
     # stop = io.save_solution()

@@ -3,52 +3,9 @@ __date__ = "2014-04-09"
 __copyright__ = "Copyright (C) 2014 " + __author__
 __license__ = "GNU Lesser GPL version 3 or any later version"
 
-# from oasis.problems import *
-from oasis.problems import (
-    subprocess,
-    getpid,
-    path,
-    defaultdict,
-    array,
-    maximum,
-    zeros,
-    getMemoryUsage,
-    # NS_parameters,
-    # NS_expressions,
-    constrained_domain,
-    scalar_components,
-    Schmidt,
-    Schmidt_T,
-    Scalar,
-    RED,
-    BLUE,
-    GREEN,
-    info_blue,
-    info_green,
-    info_red,
-    OasisTimer,
-    OasisMemoryUsage,
-    initial_memory_use,
-    oasis_memory,
-    strain,
-    omega,
-    Omega,
-    Strain,
-    QC,
-    recursive_update,
-    OasisXDMFFile,
-    add_function_to_tstepfiles,
-    body_force,
-    initialize,
-    # create_bcs,
-    scalar_hook,
-    scalar_source,
-    pre_solve_hook,
-    theend_hook,
-    get_problem_parameters,
-    post_import_problem,
-    Domain,
-)
+import numpy as np
+import matplotlib.pyplot as plt
+from oasis.problems import info_blue, Domain
 import dolfin as df
 from ufl import Coefficient
 
@@ -124,7 +81,9 @@ default_parameters = dict(
         preconditioner_type="jacobi",
         low_memory_version=False,
     ),
-    velocity_krylov_solver=dict(solver_type="bicgstab", preconditioner_type="jacobi"),
+    velocity_krylov_solver=dict(
+        solver_type="bicgstab", preconditioner_type="jacobi"
+    ),  # jacobi is cheap. ->
     pressure_krylov_solver=dict(solver_type="gmres", preconditioner_type="hypre_amg"),
     scalar_krylov_solver=dict(solver_type="bicgstab", preconditioner_type="jacobi"),
     nut_krylov_solver=dict(
@@ -331,7 +290,7 @@ class FracDomain(Domain):
 
         # Get scalar sources
         self.fs = fs = self.scalar_source()
-        for ci in scalar_components:
+        for ci in self.scalar_components:
             assert isinstance(fs[ci], Coefficient)
             b0[ci] = df.assemble(v * fs[ci] * df.dx)
 
@@ -360,6 +319,19 @@ class FracDomain(Domain):
             # self.q_1[ci].vector().axpy(1.0, self.q_[ci].vector())
         return
 
+    # def initial_hook(self, **kvargs):
+
+    #     # dx, dy = V.tabulate_dof_coordinates().T  # 10942,2
+    #     # # dofmap = V.dofmap()  # len(dofmap.dofs()) = 1042
+    #     # msh = V.mesh()
+    #     # mx, my = msh.coordinates().T  # 2805, 2
+    #     # cells = msh.cells()
+    #     # fig, ax = plt.subplots()
+    #     # # ax.plot(mx, my, "ro")
+    #     # plt.triplot(mx, my, cells, "o")
+    #     # ax.plot(dx, dy, "k.")
+    #     # ax.set_aspect("equal")
+
     def velocity_tentative_hook(self, **kvargs):
         """Called just prior to solving for tentative velocity."""
         pass
@@ -370,6 +342,7 @@ class FracDomain(Domain):
 
     def start_timestep_hook(self, **kvargs):
         """Called at start of new timestep"""
+
         pass
 
     def temporal_hook(self, **kvargs):

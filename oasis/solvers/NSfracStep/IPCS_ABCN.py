@@ -136,17 +136,14 @@ class TentativeVelocityStep:
         # - - - - - - - - - - - - -SETUP- - - - - - - - - - - - - - - - - -
         # Allocate a dictionary of Functions for holding and computing
         # pressure gradients
-        gradp = {
-            ui: ut.GradFunction(
-                dmn.q_["p"],
-                dmn.V,
-                i=i,
-                name="dpd" + ("x", "y", "z")[i],
-                bcs=ut.homogenize(dmn.bcs[ui]),
-                method=dmn.velocity_update_solver,
-            )
-            for i, ui in enumerate(dmn.u_components)
-        }
+        gradp = {}
+        p_ = dmn.q_["p"]
+        method = dmn.velocity_update_solver
+        for i, ui in enumerate(dmn.u_components):
+            name = "dpd" + ("x", "y", "z")[i]
+            bcs = ut.homogenize(dmn.bcs[ui])
+            gradp[ui] = ut.GradFunction(p_, dmn.V, i, bcs, name, method)
+
         # - - - - - - - - - -get_solvers - - - - - - - - - - - - - - - - - -
         if domain.use_krylov_solvers:
             vks = dmn.velocity_krylov_solver
@@ -183,8 +180,10 @@ class TentativeVelocityStep:
         """Update the velocity after regular pressure velocity iterations."""
         dmn = self.domain
         # for ui in u_components:
-        self.gradp[ui](dmn.dp_)
-        dmn.q_[ui].vector().axpy(-dmn.dt, self.gradp[ui].vector())
+        grad_dp = self.gradp[ui](dmn.dp_)  # grad(p_old - p_new)
+        # print(grad_dp is self.gradp[ui].vector())
+        # u = -dt*u + grad(dp_x); v = -dt*u + grad(dp_y)
+        dmn.q_[ui].vector().axpy(-dmn.dt, grad_dp)
         [bc.apply(dmn.q_[ui].vector()) for bc in dmn.bcs[ui]]
         return
 
@@ -196,9 +195,8 @@ class PressureStep:
         # - - - - - - - - - - - - -SETUP- - - - - - - - - - - - - - - - - -
         # Allocate Function for holding and computing the
         # velocity divergence on Q
-        divu = ut.DivFunction(
-            dmn.u_, dmn.Q, name="divu", method=dmn.velocity_update_solver
-        )
+        method = dmn.velocity_update_solver
+        divu = ut.DivFunction(dmn.u_, dmn.Q, name="divu", method=method)
         # Pressure Laplacian.
         Ap = ut.assemble_matrix(inner(grad(q), grad(p)) * dx, dmn.bcs["p"])
         if dmn.bcs["p"] == []:
@@ -229,23 +227,23 @@ class PressureStep:
     def solve(self):
         """Solve pressure equation."""
         dmn = self.domain
-
+        dpv = dmn.dp_.vector()
+        p_ = dmn.q_["p"].vector()
         [bc.apply(dmn.b["p"]) for bc in dmn.bcs["p"]]
-        dmn.dp_.vector().zero()
-        dmn.dp_.vector().axpy(1.0, dmn.q_["p"].vector())
+        dpv.zero()
+        dpv.axpy(1.0, p_)  # dp_ = 1*0 + p_
         # KrylovSolvers use nullspace for normalization of pressure
         if hasattr(self.Ap, "null_space"):
             self.p_sol.null_space.orthogonalize(dmn.b["p"])
 
         t1 = Timer("Pressure Linear Algebra Solve")
-        self.p_sol.solve(self.Ap, dmn.q_["p"].vector(), dmn.b["p"])
+        self.p_sol.solve(self.Ap, p_, dmn.b["p"])
         t1.stop()
         # LUSolver use normalize directly for normalization of pressure
         if dmn.bcs["p"] == []:
-            normalize(dmn.q_["p"].vector())
-        dpv = dmn.dp_.vector()
-        dpv.axpy(-1.0, dmn.q_["p"].vector())
-        dpv *= -1.0
+            normalize(p_)
+        dpv.axpy(-1.0, p_)  # dp_ = -1*p_old + p_new
+        dpv *= -1.0  # dp_ = p_old - p_new
         return
 
 
@@ -253,10 +251,6 @@ class ScalarSolver:
     def __init__(self, domain):
         # TODO: M from first inner
         M = self.M  # from FirstInnerIter
-        # A = self.A
-
-        # u, v = domain.u, domain.v
-        # q, p = domain.q, domain.p
         dmn = self.domain = domain
         # ... get_solvers:
         if dmn.use_krylov_solvers:
