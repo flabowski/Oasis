@@ -8,6 +8,7 @@ from dolfin import Matrix, Vector, Function, VectorSpaceBasis, Timer
 from dolfin import PETScPreconditioner, PETScKrylovSolver, LUSolver
 from dolfin import as_backend_type, as_vector
 import oasis.common.utilities as ut
+import matplotlib.pyplot as plt
 
 
 def attach_pressure_nullspace(Ap, p, Q):
@@ -109,7 +110,7 @@ class FirstInner:
             A.axpy(-0.5, KT[0], True)
 
         for i, ui in enumerate(dmn.u_components):
-            # Start with body force
+            # Start with body force b0
             # TODO: dmn.b_tmp[ui].assign(dmn.b0[ui])
             dmn.b_tmp[ui].zero()
             dmn.b_tmp[ui].axpy(1.0, dmn.b0[ui])
@@ -125,7 +126,7 @@ class FirstInner:
         # Reset matrix for lhs
         A *= -1.0
         A.axpy(2.0 / dmn.dt, M, True)
-        [bc.apply(A) for bc in dmn.bcs["u0"]]
+        [bc.apply(A) for bc in dmn.bcs["u0"]]  # TODO: is this correct?
         t0.stop()
         return
 
@@ -217,18 +218,22 @@ class PressureStep:
         return
 
     def assemble(self):
-        """Assemble rhs of pressure equation."""
+        """Assemble rhs of pressure equation.
+        rhs = -1/dt*inner(div(u), v) *dx + inner(grad(p*), (grad(q)) *dx"""
         dmn = self.domain
         self.divu.assemble_rhs()  # Computes div(u_)*q*dx
         dmn.b["p"][:] = self.divu.rhs
         dmn.b["p"] *= -1.0 / dmn.dt
         dmn.b["p"].axpy(1.0, self.Ap * dmn.q_["p"].vector())
+        # print("divu", (self.divu.rhs.get_local() ** 2).sum() ** 0.5)
+        return
 
-    def solve(self):
+    def solve(self, p_approx=False):
         """Solve pressure equation."""
         dmn = self.domain
         dpv = dmn.dp_.vector()
-        p_ = dmn.q_["p"].vector()
+        p_ = dmn.q_["p"].vector()  # =p*
+
         [bc.apply(dmn.b["p"]) for bc in dmn.bcs["p"]]
         dpv.zero()
         dpv.axpy(1.0, p_)  # dp_ = 1*0 + p_
@@ -237,13 +242,17 @@ class PressureStep:
             self.p_sol.null_space.orthogonalize(dmn.b["p"])
 
         t1 = Timer("Pressure Linear Algebra Solve")
-        self.p_sol.solve(self.Ap, p_, dmn.b["p"])
+        if hasattr(p_approx, "__len__"):
+            p_.array = p_approx.ravel()
+        else:
+            self.p_sol.solve(self.Ap, p_, dmn.b["p"])
         t1.stop()
         # LUSolver use normalize directly for normalization of pressure
         if dmn.bcs["p"] == []:
             normalize(p_)
-        dpv.axpy(-1.0, p_)  # dp_ = -1*p_old + p_new
-        dpv *= -1.0  # dp_ = p_old - p_new
+        dpv.axpy(-1.0, p_)  # dp_ = -1*p* + p_new
+        dpv *= -1.0  # dp_ = p* - p_new
+        # dpv = dp_ is only used for the velocity correction
         return
 
 

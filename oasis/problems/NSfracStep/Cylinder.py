@@ -11,10 +11,11 @@ import numpy as np
 from os import listdir, remove, rename, mkdir, fsdecode
 from os.path import isfile, join, dirname, exists
 from datetime import datetime
+from shutil import copy2
 from oasis.problems.NSfracStep import FracDomain
 from dolfin import Expression, DirichletBC, Mesh, XDMFFile, MeshValueCollection
-from dolfin import cpp
-from ROM.snapshot_manager import Data, load_snapshots_cavity, load_snapshots_cylinder
+from dolfin import cpp, FacetNormal, grad, Identity, ds, assemble, dot
+from ROM.snapshot_manager import Data
 from low_rank_model_construction.proper_orthogonal_decomposition import row_svd
 
 H = 0.41
@@ -44,13 +45,17 @@ class Cylinder(FracDomain):
         Re = rho * Umean * D / mu
         print("Re", Re)
         nu = mu / rho
+        self.coeff = 2 / (rho * D * Umean ** 2)
+        self.Re = Re
+        self.mu = mu
+        self.rho = rho
         self.Umean = Umean
         self.Umax = Umax
         self.Schmidt = {}
         self.Schmidt_T = {}
         self.nu = nu
-        self.T = 10
-        self.dt = 0.01
+        self.T = 8
+        self.dt = 1 / 1600
         self.checkpoint = 50
         self.save_step = 50
         self.plot_interval = 10
@@ -76,6 +81,12 @@ class Cylinder(FracDomain):
                     raise ValueError(temp_dir + "needs to be empty")
         else:
             mkdir(temp_dir)
+        m = int(self.T / self.dt)
+        self.C_D = np.empty((m,))
+        self.C_L = np.empty((m,))
+        self.t_u = np.empty((m,))
+        self.t_p = np.empty((m,))
+        self.C_D[:] = self.C_L[:] = np.NaN
         return
 
     def mesh_from_file(self, mesh_name, facet_name):
@@ -94,14 +105,15 @@ class Cylinder(FracDomain):
             "inlet": 3,
             "outlet": 4,
         }
+        self.ds_ = ds(subdomain_data=self.mf, domain=self.mesh)
         return
 
     def create_bcs(self):
         mf, bc_dict = self.mf, self.bc_dict
         V, Q, Umax, H = self.V, self.Q, self.Umax, self.H
         # U0_str = "4.0*x[1]*(0.41-x[1])/0.1681"
-        U0_str = "4.*{0}*x[1]*({1}-x[1])/pow({1}, 2)".format(Umax, H)
-        inlet = Expression(U0_str, degree=2)
+        U0_str = "4.*Umax*x[1]*({0}-x[1])/pow({0}, 2)".format(H)
+        inlet = Expression(U0_str, degree=2, Umax=Umax)
         bc00 = DirichletBC(V, inlet, mf, bc_dict["inlet"])
         bc01 = DirichletBC(V, 0.0, mf, bc_dict["inlet"])
         bc10 = bc11 = DirichletBC(V, 0.0, mf, bc_dict["cylinderwall"])
@@ -114,34 +126,104 @@ class Cylinder(FracDomain):
         }
         return
 
-    def start_timestep_hook(self, **kvargs):
+    def update_bcs(self, t):
+        Umax = 1.5 * np.sin(np.pi * t / 8)
+        # U0_str = "4.*{1}*x[1]*({0}-x[1])/pow({0}, 2)".format(H, Umax)
+        U0_str = "4.*Umax*x[1]*({0}-x[1])/pow({0}, 2)".format(H)
+        t2 = datetime.now()
+        inlet = Expression(U0_str, degree=2, Umax=Umax)
+        t3 = datetime.now()
+        bc00 = DirichletBC(self.V, inlet, self.mf, self.bc_dict["inlet"])
+        self.bcs["u0"][0] = bc00
+        dt = (t3 - t2).total_seconds()
+        if dt > 0.1:
+            print(t, t3 - t2)
+        return
+
+    def normal_stresses(self):
+        p = self.q_["p"]
+        n = FacetNormal(self.mesh)
+        grad_u = grad(self.u_)
+        tau = self.mu * (grad_u + grad_u.T) - p * Identity(2)
+        F_drag = assemble(dot(tau, n)[0] * self.ds_(2))
+        F_lift = assemble(dot(tau, n)[1] * self.ds_(2))
+        return -self.coeff * F_drag, -self.coeff * F_lift
+
+    def start_timestep_hook(self, t, **kvargs):
         """Called at start of new timestep"""
+        self.update_bcs(t)
         # TODO: predict p_
         # X_approx, X_approx_n = self.ROM.predict(xi)
         # self.q_["p"].vector().vec().array = X_approx.ravel()
         pass
 
     def temporal_hook(self, t, tstep, **kvargs):
-        i = tstep - 1
-        pth = self.temp_dir
-        if i % 100 == 0:
-            fig, (ax1, ax2) = self.plot()
-            plt.savefig(pth + "frame_{:06d}.png".format(i))
-            plt.close()
         # u = self.q_["u0"].compute_vertex_values(mesh)  # 2805
         u = self.q_["u0"].vector().vec().array  # 10942
         v = self.q_["u1"].vector().vec().array
         p = self.q_["p"].vector().vec().array
+        i = tstep - 1
+        pth = self.temp_dir
+        self.C_D[i], self.C_L[i] = self.normal_stresses()
+        self.t_u[i] = t
+        if (i == 0) or ((tstep % 100) == 0):
+            fig, (ax1, ax2) = self.plot()
+            plt.savefig(pth + "frame_{:06d}.png".format(tstep))
+            plt.close()
+
+            pth2 = "/home/florianma@ad.ife.no/ad_disk/Florian/Repositoties/dolfinx-tutorial/chapter2/"
+            turek = np.loadtxt(pth2 + "bdforces_lv4")
+            turek_p = np.loadtxt(pth2 + "pointvalues_lv4")
+            t_u, C_D, C_L = self.t_u, self.C_D, self.C_L
+            num_velocity_dofs = len(u) + len(v)
+            num_pressure_dofs = len(p)
+            dofs = num_velocity_dofs + num_pressure_dofs
+
+            fig = plt.figure(figsize=(25, 8))
+            lbl = r"FEniCSx  ({0:d} dofs)".format(dofs)
+            plt.plot(t_u, C_D, "-.", label=lbl, linewidth=2)
+            plt.plot(
+                turek[1:, 1],
+                turek[1:, 3],
+                marker="x",
+                markevery=50,
+                linestyle="",
+                markersize=4,
+                label="FEATFLOW (42016 dofs)",
+            )
+            plt.title("Drag coefficient")
+            plt.grid()
+            plt.legend()
+            plt.savefig(pth + "drag_comparison.png")
+            plt.close()
+
+            fig = plt.figure(figsize=(25, 8))
+            lbl = r"FEniCSx  ({0:d} dofs)".format(dofs)
+            plt.plot(t_u, C_L, "-.", label=lbl, linewidth=2)
+            plt.plot(
+                turek[1:, 1],
+                turek[1:, 4],
+                marker="x",
+                markevery=50,
+                linestyle="",
+                markersize=4,
+                label="FEATFLOW (42016 dofs)",
+            )
+            plt.title("Lift coefficient")
+            plt.grid()
+            plt.legend()
+            plt.savefig(pth + "lift_comparison.png")
+            plt.close()
         np.save(pth + "u_{:06d}.npy".format(i), u)
         np.save(pth + "v_{:06d}.npy".format(i), v)
         np.save(pth + "p_{:06d}.npy".format(i), p)
         tvs = kvargs.get("tvs", None)
         if tvs:
+            # TODO
             gradpx = tvs.gradp["u0"].vector().vec().array
             gradpy = tvs.gradp["u1"].vector().vec().array
             np.save(pth + "gradpx_{:06d}.npy".format(i), gradpx)
             np.save(pth + "gradpy_{:06d}.npy".format(i), gradpy)
-
         return
 
     def theend_hook(self):
@@ -174,9 +256,9 @@ class Cylinder(FracDomain):
             np.save(pth + "ROM_X_min_" + quantity + ".npy", my_data.X_min)
             np.save(pth + "ROM_X_range_" + quantity + ".npy", my_data.X_range)
 
-            fig, ax = plt.subplots()
-            plt.imshow(X_q)
-            plt.show()
+            # fig, ax = plt.subplots()
+            # plt.imshow(X_q)
+            # plt.show()
             for i, f in enumerate(onlyfiles):
                 remove(tmp_pth + f)
         # move temp png files to results folder
@@ -196,6 +278,11 @@ class Cylinder(FracDomain):
         np.save(pth + "nu.npy", np.array([self.nu]))
         # np.save(pth + "Re.py", np.array([self.Re]))
         # TODO: save other parameters (mu, ...)
+        for nm in ["mf.xdmf", "mf.h5", "mesh.xdmf", "mesh.h5"]:
+            src = self.pkg_dir + nm
+            dst = pth + nm
+            print(src, dst)
+            copy2(src, dst)
 
         print("finished :)")
         return
