@@ -15,6 +15,8 @@ from low_rank_model_construction.basis_function_interpolation import ReducedOrde
 import matplotlib.pyplot as plt
 import matplotlib
 
+np.set_printoptions(suppress=True)
+
 matplotlib.use("Agg")  # Qt5Agg for normal interactive, Agg for offsceen
 plt.close("all")
 
@@ -47,37 +49,36 @@ solvername = my_domain.solver
 # TODO: import the right solver based on solvername:
 # solver =  NSfracStep.get_solver(solvername)
 my_domain.dt = 1 / 1600
-my_domain.max_iter = 25
+my_domain.max_iter = 1
 my_domain.max_error = 1e-6
 use_ROM = False
-
-cond = my_domain.krylov_solvers["monitor_convergence"]
-print_info = my_domain.use_krylov_solvers and cond  # = print_solve_info
-
-tx = OasisTimer("Timestep timer")
-tx.start()
-total_timer = OasisTimer("Start simulations", True)
-
-it0 = my_domain.iters_on_first_timestep
-max_iter = my_domain.max_iter
+skip_pressure_step = False
+debug = False
 
 if use_ROM:
-    ###
     dir_oasis = "/home/florianma@ad.ife.no/ad_disk/Florian/Repositoties/Oasis/"
     dir_rom = dir_oasis + "results/cylinder_reference/"
 
     U = np.load(dir_rom + "ROM_U_p.npy")
     S = np.load(dir_rom + "ROM_S_p.npy")
     VT = np.load(dir_rom + "ROM_VT_p.npy")
-    X = np.load(dir_rom + "X_p.npy")
     X_min = np.load(dir_rom + "ROM_X_min_p.npy")
     X_range = np.load(dir_rom + "ROM_X_range_p.npy")
+    X = np.load(dir_rom + "X_p.npy")
     time = np.load(dir_rom + "time.npy")
     nu = np.load(dir_rom + "nu.npy")
     grid = (time,)
-    r = np.sum(np.cumsum(S) / np.sum(S) < 0.9999)
-    ROM = ReducedOrderModel(grid, U[:, :r], S[:r], VT, X_min, X_range)
-    ####
+    r = np.sum(np.cumsum(S) / np.sum(S) < 0.99999)  # -0.00373 ... 0.00450
+    ROM = ReducedOrderModel(grid, U[:, :r], S[:r], VT[:r], X_min, X_range)
+
+tx = OasisTimer("Timestep timer")
+tx.start()
+total_timer = OasisTimer("Start simulations", True)
+
+cond = my_domain.krylov_solvers["monitor_convergence"]
+print_info = my_domain.use_krylov_solvers and cond  # = print_solve_info
+it0 = my_domain.iters_on_first_timestep
+max_iter = my_domain.max_iter
 
 fit = solver.FirstInner(my_domain)
 tvs = solver.TentativeVelocityStep(my_domain)
@@ -85,15 +86,16 @@ ps = solver.PressureStep(my_domain)
 stop = False
 t = 0.0
 tstep = 0
+total_inner_iterations = 0
 while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
 
-    # if tstep == 10:
+    # if tstep == 30:
     #     stop = True
+
     t += my_domain.dt
     tstep += 1
 
     inner_iter = 0
-    udiff = np.array([1e8])  # Norm of velocity change over last inner iter
     num_iter = max(it0, max_iter) if tstep <= 10 else max_iter
 
     ts = OasisTimer("start_timestep_hook")
@@ -101,15 +103,20 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
     ts.stop()
 
     tr0 = OasisTimer("ROM")
-    p_approx = False
     if use_ROM:
-        p_approx, p_approx_n = ROM.predict([t])
-        my_domain.q_["p"].vector().vec().array = p_approx.ravel()
-    tentative_guess = my_domain.q_["p"].vector().vec().array.copy()
+        if tstep > 1:
+            offset = 0.0  # -0.5 * my_domain.dt
+        else:
+            offset = 0
+        guess1 = my_domain.q_["p"].vector().vec().array.copy()
+        guess2 = ROM.predict([t - offset])[0].ravel()
+        guess3 = X[:, tstep - 1]
+        my_domain.q_["p"].vector().vec().array = guess3
     tr0.stop()
-    # f, a = plt.subplots()
-    while udiff[0] > my_domain.max_error and inner_iter < num_iter:
+    udiff = 1e8
+    while udiff > my_domain.max_error and inner_iter < num_iter:
         inner_iter += 1
+        total_inner_iterations += 1
 
         t0 = OasisTimer("Tentative velocity")
         if inner_iter == 1:
@@ -117,46 +124,52 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
             # nnmodel.nn_update()
             fit.assemble()
             tvs.A = fit.A
-        udiff[0] = 0.0
+        udiff = 0
         for i, ui in enumerate(my_domain.u_components):
             t1 = OasisTimer("Solving tentative velocity " + ui, print_info)
             tvs.assemble(ui=ui)  # uses p_ to compute gradp
             my_domain.velocity_tentative_hook(ui=ui)
-            tvs.solve(ui=ui, udiff=udiff)
+            udiff = tvs.solve(ui=ui, udiff=udiff)
             t1.stop()
         t0.stop()
+
         t2 = OasisTimer("Pressure solve", print_info)
-        # if use_ROM:
-        #     dmn = my_domain
-        #     dpv = dmn.dp_.vector()
-        #     p_ = dmn.q_["p"].vector()  # =p*
-
-        #     dpv.zero()
-        #     dpv.axpy(1.0, p_)  # dp_ = 1*0 + p_
-        #     # p_approx, p_approx_n = ROM.predict([t])
-        #     my_domain.q_["p"].vector().vec().array = p_approx.ravel()
-        #     dpv.axpy(-1.0, p_)  # dp_ = -1*p* + p_new
-        #     dpv *= -1.0  # dp_ = p* - p_new
-        # else:
-        ps.assemble()
-        my_domain.pressure_hook()
-        ps.solve()
+        if not skip_pressure_step:
+            ps.assemble()
+            my_domain.pressure_hook()
+            pdiff = ps.solve()
         t2.stop()
-        # a.plot(my_domain.q_["p"].vector().vec().array)
-        # if tstep <= 2:
-        #     fig, ax = plt.subplots()
-        #     plt.plot(x, my_domain.dp_.vector(), "k.")
-        #     plt.show()
 
+        if debug:
+            p = my_domain.q_["p"].vector().vec().array
+            e3 = np.abs(p - guess3)
+            phi = np.abs(my_domain.dp_.vector().vec().array)
+            print(
+                inner_iter,
+                "{:.6f} \t {:.8f} \t {:.8f}".format(udiff, phi.max(), e3.max()),
+            )
         my_domain.print_velocity_pressure_info(num_iter, inner_iter, udiff)
+    if debug:
+        print(
+            "step {:.0f}, time: {:.6f} s. Inner loop stopped after {:.0f} inner iterations. Total inner iterations: {:.0f}".format(
+                tstep, t, inner_iter, total_inner_iterations
+            )
+        )
+    if use_ROM:
         p = my_domain.q_["p"].vector().vec().array
-        error = np.sum((p - tentative_guess) ** 2)
-        print(tstep, "inner_iter", inner_iter, udiff, error)
-    # plt.show()
+        e1 = np.abs(p - guess1)
+        e2 = np.abs(p - guess2)
+        e3 = np.abs(p - guess3)
+        print(
+            "{:.6f}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.6f}\t{:.6f}\t".format(
+                e1.max(), e1.mean(), e2.max(), e2.mean(), e3.max(), e3.mean()
+            )
+        )
     # Update velocity
     t3 = OasisTimer("Velocity update")
-    for i, ui in enumerate(my_domain.u_components):
-        tvs.velocity_update(ui=ui)
+    if not skip_pressure_step:
+        for i, ui in enumerate(my_domain.u_components):
+            tvs.velocity_update(ui=ui)
     t3.stop()
 
     # TODO: Solve for scalars
@@ -170,15 +183,6 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
     t4 = OasisTimer("temporal hook")
     my_domain.temporal_hook(t=t, tstep=tstep, tvs=tvs)
     t4.stop()
-
-    if use_ROM and tstep <= 5:
-        x, y = my_domain.Q.tabulate_dof_coordinates().T
-        p_exact = my_domain.q_["p"].vector().vec().array
-        fig, ax = plt.subplots()
-        plt.plot(x, p_approx, "r.")
-        plt.plot(x, p_exact, "g.")
-        plt.plot(x, X[:, tstep - 1], "b.")
-        plt.show()
 
     # TODO: Save solution if required and check for killoasis file
     # stop = io.save_solution()
@@ -198,6 +202,8 @@ while t < (my_domain.T - tstep * df.DOLFIN_EPS) and not stop:
         and not stop
     ):
         my_domain.q_["p"].vector().axpy(0.5, my_domain.dp_.vector())
+    if tstep == 100:
+        print(total_inner_iterations)
 
 total_timer.stop()
 df.list_timings(df.TimingClear.keep, [df.TimingType.wall])
