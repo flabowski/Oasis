@@ -144,6 +144,7 @@ class TentativeVelocityStep:
             name = "dpd" + ("x", "y", "z")[i]
             bcs = ut.homogenize(dmn.bcs[ui])
             gradp[ui] = ut.GradFunction(p_, dmn.V, i, bcs, name, method)
+            # gradp_DG0[ui] = ut.GradFunction(p_, dmn.R, i)  # , bcs, name, method)
 
         # - - - - - - - - - -get_solvers - - - - - - - - - - - - - - - - - -
         if domain.use_krylov_solvers:
@@ -155,12 +156,13 @@ class TentativeVelocityStep:
             u_sol = LUSolver()
         self.u_sol = u_sol
         self.gradp = gradp
+        # self.gradp_DG0 = gradp_DG0
         return
 
     def assemble(self, ui):
         dmn = self.domain
         dmn.b[ui].zero()
-        dmn.b[ui].axpy(1.0, dmn.b_tmp[ui])
+        dmn.b[ui].axpy(1.0, dmn.b_tmp[ui])  # b_tmp holds body forces
         self.gradp[ui].assemble_rhs(dmn.q_["p"])
         dmn.b[ui].axpy(-1.0, self.gradp[ui].rhs)
         return
@@ -174,16 +176,19 @@ class TentativeVelocityStep:
         t1 = Timer("Tentative Linear Algebra Solve")
         self.u_sol.solve(self.A, dmn.q_[ui].vector(), dmn.b[ui])
         t1.stop()
-        udiff[0] += norm(dmn.q_2[ui].vector() - dmn.q_[ui].vector())
-        return
+        # udiff += norm(dmn.q_2[ui].vector() - dmn.q_[ui].vector())
+        old = dmn.q_2[ui].vector().vec().array
+        new = dmn.q_[ui].vector().vec().array
+        udiff += ((old - new) ** 2).sum() ** 0.5
+        return udiff
 
     def velocity_update(self, ui):
         """Update the velocity after regular pressure velocity iterations."""
         dmn = self.domain
         # for ui in u_components:
-        grad_dp = self.gradp[ui](dmn.dp_)  # grad(p_old - p_new)
+        grad_dp = self.gradp[ui](dmn.dp_)  # grad(p_new - p*)
         # print(grad_dp is self.gradp[ui].vector())
-        # u = -dt*u + grad(dp_x); v = -dt*u + grad(dp_y)
+        # u = u* - dt*grad(dp_x); v = v* - dt*grad(dp_y)
         dmn.q_[ui].vector().axpy(-dmn.dt, grad_dp)
         [bc.apply(dmn.q_[ui].vector()) for bc in dmn.bcs[ui]]
         return
@@ -215,7 +220,22 @@ class PressureStep:
         self.divu = divu
         self.Ap = Ap
         self.p_sol = p_sol
+
+        gradp_DG0 = {}
+        for i, ui in enumerate(dmn.u_components):
+            gradp_DG0[ui] = ut.GradFunction(
+                dmn.q_["p"], dmn.R, i
+            )  # , bcs, name, method)
+        self.gradp_DG0 = gradp_DG0
         return
+
+    def pressure_gradient(self):
+        dmn = self.domain
+        res = [None, None]
+        for i, ui in enumerate(dmn.u_components):
+            self.gradp_DG0[ui].assemble_rhs(dmn.q_["p"])
+            res[i] = self.gradp_DG0[ui](dmn.q_["p"])
+        return res
 
     def assemble(self):
         """Assemble rhs of pressure equation.
@@ -228,7 +248,7 @@ class PressureStep:
         # print("divu", (self.divu.rhs.get_local() ** 2).sum() ** 0.5)
         return
 
-    def solve(self, p_approx=False):
+    def solve(self):
         """Solve pressure equation."""
         dmn = self.domain
         dpv = dmn.dp_.vector()
@@ -236,24 +256,26 @@ class PressureStep:
 
         [bc.apply(dmn.b["p"]) for bc in dmn.bcs["p"]]
         dpv.zero()
-        dpv.axpy(1.0, p_)  # dp_ = 1*0 + p_
+        dpv.axpy(1.0, p_)  # dp_ = 0 + 1.0*p*
         # KrylovSolvers use nullspace for normalization of pressure
         if hasattr(self.Ap, "null_space"):
             self.p_sol.null_space.orthogonalize(dmn.b["p"])
 
         t1 = Timer("Pressure Linear Algebra Solve")
-        if hasattr(p_approx, "__len__"):
-            p_.array = p_approx.ravel()
-        else:
-            self.p_sol.solve(self.Ap, p_, dmn.b["p"])
+        # if hasattr(p_approx, "__len__"):
+        #     p_.array = p_approx.ravel()
+        # else:
+        self.p_sol.solve(self.Ap, p_, dmn.b["p"])
         t1.stop()
         # LUSolver use normalize directly for normalization of pressure
         if dmn.bcs["p"] == []:
             normalize(p_)
-        dpv.axpy(-1.0, p_)  # dp_ = -1*p* + p_new
-        dpv *= -1.0  # dp_ = p* - p_new
+        dpv.axpy(-1.0, p_)  # dp_ = p* - p_new
+        dpv *= -1.0  # dp_ = p_new - p*
+        # pdiff = norm(dpv)
         # dpv = dp_ is only used for the velocity correction
-        return
+        pdiff = ((dpv.vec().array) ** 2).sum() ** 0.5
+        return pdiff
 
 
 class ScalarSolver:

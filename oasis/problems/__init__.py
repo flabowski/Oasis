@@ -300,16 +300,16 @@ class Domain:
         print("recommended dt =", dt)
         return dt
 
-    def set_parameters_from_commandline(self, commandline_kwargs):
+    def set_parameters(self, kwargs):
         # Update NS_namespace with all parameters modified through command line
-        for key, val in commandline_kwargs.items():
-            setattr(self, key, commandline_kwargs[key])
+        for key, val in kwargs.items():
+            setattr(self, key, kwargs[key])
             if key not in self.__dict__.keys():
                 raise KeyError("unknown key", key)
             elif isinstance(val, dict):
-                setattr(self, key, commandline_kwargs[key])
+                setattr(self, key, kwargs[key])
             else:
-                setattr(self, key, commandline_kwargs[key])
+                setattr(self, key, kwargs[key])
         return
 
     def show_info(self, t, tstep, toc):

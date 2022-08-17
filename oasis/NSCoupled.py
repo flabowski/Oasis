@@ -155,6 +155,7 @@ b = dict((ui, df.Vector(x_[ui])) for ui in sys_comp)
 NS_namespace["b"] = b
 
 # Short form scalars
+# FIXME:
 for ci in scalar_components:
     print("{}_   = q_ ['{}']".format(ci, ci))
     print("{}_1   = q_1 ['{}']".format(ci, ci))
@@ -270,5 +271,4 @@ info_red(
 )
 
 # Final hook
-pblm.theend_hook(**vars())
 pblm.theend_hook(**vars())

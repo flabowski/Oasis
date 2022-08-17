@@ -138,6 +138,7 @@ class OasisFunction(df.Function):
         else:
             self.vector().zero()
             self.vector().axpy(1.0, self.rhs * self.ML)
+        timer.stop()
 
 
 class GradFunction(OasisFunction):
@@ -200,11 +201,11 @@ class GradFunction(OasisFunction):
         to use this Function to compute both grad(p) and grad(dp), i.e.,
         the gradient of pressure correction.
         """
-        if isinstance(u, Coefficient):
-            self.matvec[1] = u
+        if isinstance(u, Coefficient):  # <-
+            self.matvec[1] = u  # u = p_
             self.bf = u.dx(self.i) * self.test * df.dx()
 
-        if not self.matvec[0] is None:
+        if not self.matvec[0] is None:  # <-
             mat, func = self.matvec
             self.rhs.zero()
             self.rhs.axpy(1.0, mat * func.vector())
@@ -212,14 +213,14 @@ class GradFunction(OasisFunction):
             df.assemble(self.bf, tensor=self.rhs)
 
     def __call__(self, u=None, assemb_rhs=True):
-        if isinstance(u, Coefficient):
+        if isinstance(u, Coefficient):  # <-
             self.matvec[1] = u
             self.bf = u.dx(self.i) * self.test * df.dx()
 
         if self.method.lower() == "gradient_matrix":
             self.vector().zero()
             self.vector().axpy(1.0, self.WGM * self.matvec[1].vector())
-        else:
+        else:  # <-
             OasisFunction.__call__(self, assemb_rhs=assemb_rhs)
         return self.vector()
 

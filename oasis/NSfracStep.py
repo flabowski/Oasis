@@ -32,11 +32,9 @@ a mesh and a control dictionary called NS_parameters. See
 problems/NSfracStep/__init__.py for all possible parameters.
 
 """
-import importlib
 import oasis.common.io as io
 import pickle
 from os import path
-import copy
 import dolfin as df
 import numpy as np
 from oasis.common import parse_command_line  # ,convert
@@ -56,7 +54,7 @@ from oasis.problems import (
 commandline_kwargs = parse_command_line()
 
 # Find the problem module
-default_problem = "DrivenCavity"
+default_problem = "Cylinder"
 problemname = commandline_kwargs.get("problem", default_problem)
 # Import the problem module
 print("Importing problem module " + problemname)
@@ -93,6 +91,7 @@ NS_namespace, problem_parameters = post_import_problem(
 )
 scalar_components = problem_parameters["scalar_components"]
 mesh = NS_namespace["mesh"]
+print(scalar_components)
 
 # Use t and tstep from stored paramteres if restarting
 if problem_parameters["restart_folder"] is not None:
@@ -189,12 +188,17 @@ b_tmp = dict((ui, df.Vector(x_[ui])) for ui in sys_comp)  # rhs temp storage vec
 NS_namespace["b"], NS_namespace["b_tmp"] = b, b_tmp
 
 # Short forms pressure and scalars
+# FIXME: this should be a function, wherever the scalar_vomponent is defined
+for ci in scalar_components:
+    print("{}_   = q_ ['{}']".format(ci, ci))
+    print("{}_1   = q_ ['{}']".format(ci, ci))
+    # exec("{}_   = q_ ['{}']".format(ci, ci))
+    # exec("{}_1  = q_1['{}']".format(ci, ci))
+    NS_namespace[ci + "_"] = q_[ci]
+    NS_namespace[ci + "_1"] = q_1[ci]
 NS_namespace["p_"] = q_["p"]  # pressure at t
 NS_namespace["p_1"] = q_1["p"]  # pressure at t - dt
 NS_namespace["dp_"] = dp_ = df.Function(Q)  # pressure correction
-for ci in scalar_components:
-    exec("{}_   = q_ ['{}']".format(ci, ci))
-    exec("{}_1  = q_1['{}']".format(ci, ci))
 
 krylov_solvers = problem_parameters["krylov_solvers"]
 use_krylov_solvers = problem_parameters["use_krylov_solvers"]
